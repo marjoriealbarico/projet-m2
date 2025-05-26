@@ -1,0 +1,31 @@
+import streamlit as st
+import folium
+from streamlit_folium import folium_static
+
+def afficher_carte_des_arrets(df_trip_updates):
+    st.subheader("Carte des arrêts")
+    station_recherche = st.text_input("🔎 Rechercher une station (optionnel)").strip().lower()
+    m = folium.Map(location=[46.58, 0.34], zoom_start=12)
+    grouped = df_trip_updates.dropna(subset=["stop_lat", "stop_lon"]).groupby("stop_name")
+
+    for stop_name, group in grouped:
+        if station_recherche and station_recherche not in stop_name.lower():
+            continue
+        lat = group["stop_lat"].iloc[0]
+        lon = group["stop_lon"].iloc[0]
+        acces = group["accessible_pmr"].iloc[0]
+        lignes = group[["route_short_name", "route_color"]].dropna().drop_duplicates()
+
+        html = f"<b>{stop_name}</b><br>Accessibilité PMR : <b>{acces}</b><br>Bus :<ul>"
+        for _, ligne in lignes.iterrows():
+            couleur = f"#{ligne['route_color']}"
+            html += f"<li><span style='background-color:{couleur};color:white;padding:2px 8px;border-radius:4px;'>{ligne['route_short_name']}</span></li>"
+        html += "</ul>"
+
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(html, max_width=300),
+            icon=folium.Icon(color="blue", icon="info-sign")
+        ).add_to(m)
+
+    folium_static(m)
