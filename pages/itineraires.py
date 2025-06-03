@@ -5,70 +5,19 @@ from streamlit_folium import folium_static
 from datetime import datetime
 import math
 
-def afficher_itineraires(df_trip_updates, stops, routes):
-    def afficher_itineraire_detail(itineraire, depart, arrivee, voir_prochain, title=None):
-        if title:
-            st.subheader(title)
+def afficher_carte_globale(segments, depart, arrivee):
+    st.subheader("🗺️ Carte globale de l'itinéraire")
+    all_points = pd.concat(segments)
+    carte = folium.Map(location=[all_points["stop_lat"].mean(), all_points["stop_lon"].mean()], zoom_start=13)
 
-        trip_id = itineraire["trip_id"].iloc[0]
-        route_color = f"#{itineraire['route_color'].iloc[0]}"
-        route_name = itineraire["route_short_name"].iloc[0]
-        direction = itineraire["trip_headsign"].iloc[0] if "trip_headsign" in itineraire.columns else "Non précisée"
+    for segment in segments:
+        color = f"#{segment['route_color'].iloc[0]}"
+        folium.PolyLine(
+            locations=list(zip(segment["stop_lat"], segment["stop_lon"])),
+            color=color, weight=5, opacity=0.8
+        ).add_to(carte)
 
-        ligne_html = f"""
-        <div style="font-size: 18px; margin-top: 10px;">
-            🎨 Ligne à prendre :
-            <span style="background-color:{route_color}; color:white; padding:4px 10px; border-radius:6px; margin-left:8px;">
-                {route_name}
-            </span><br>
-            🧭 Direction : <strong>{direction}</strong><br>
-            🚍 Départ : <strong>{depart}</strong>
-        </div>
-        """
-        st.markdown(ligne_html, unsafe_allow_html=True)
-        st.success(f"Itinéraire trouvé sur le trajet {trip_id} avec {len(itineraire)} arrêts.")
-        st.dataframe(itineraire[["trip_id", "stop_name", "departure_time", "arrival_delay", "accessible_pmr"]])
-
-        lat1, lon1 = itineraire["stop_lat"].iloc[0], itineraire["stop_lon"].iloc[0]
-        lat2, lon2 = itineraire["stop_lat"].iloc[-1], itineraire["stop_lon"].iloc[-1]
-        R = 6371
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        distance_km = R * c
-
-        try:
-            t_start = datetime.strptime(itineraire["departure_time"].iloc[0], "%Y-%m-%d %H:%M:%S")
-            t_end = datetime.strptime(itineraire["departure_time"].iloc[-1], "%Y-%m-%d %H:%M:%S")
-            now = datetime.now()
-            minutes_to_depart = max((t_start - now).seconds // 60, 0)
-            total_minutes_remaining = max((t_end - now).seconds // 60, 0)
-
-            st.info(f"⏱️ Temps total estimé jusqu'à l'arrivée : {total_minutes_remaining} minutes")
-            st.info(f"🕑 Heure estimée d'arrivée : {t_end.strftime('%H:%M:%S')}")
-
-            if voir_prochain:
-                retard = itineraire["arrival_delay"].iloc[0] or 0
-                passage_reel = t_start + pd.to_timedelta(retard, unit='s')
-                st.success(f"🕓 Prochain passage estimé : {passage_reel.strftime('%H:%M:%S')}")
-
-            if minutes_to_depart <= 5:
-                st.warning(f"🚨 Le bus part dans moins de {minutes_to_depart} minute(s) ! Dépêchez-vous.")
-            else:
-                st.success(f"🕒 Vous avez environ {minutes_to_depart} minute(s) avant le départ.")
-        except Exception:
-            st.warning("⏱️ Impossible de calculer la durée avec les horaires.")
-
-        walk_time = round((distance_km / 4.5) * 60)
-        bike_time = round((distance_km / 15) * 60)
-        st.info(f"🚶 À pied : ~{walk_time} minutes")
-        st.info(f"🚴 À vélo : ~{bike_time} minutes")
-
-        st.subheader("🗺️ Carte de l'itinéraire")
-        carte_itineraire = folium.Map(location=[itineraire["stop_lat"].mean(), itineraire["stop_lon"].mean()], zoom_start=13)
-        folium.PolyLine(locations=list(zip(itineraire["stop_lat"], itineraire["stop_lon"])), color=route_color, weight=5, opacity=0.8).add_to(carte_itineraire)
-        for _, row in itineraire.iterrows():
+        for _, row in segment.iterrows():
             color_marker = "blue"
             if row["stop_name"] == depart:
                 color_marker = "green"
@@ -76,17 +25,86 @@ def afficher_itineraires(df_trip_updates, stops, routes):
                 color_marker = "red"
             folium.Marker(
                 location=[row["stop_lat"], row["stop_lon"]],
-                popup=f"{row['stop_name']}<br>Départ : {row['departure_time']}<br>Accessibilité PMR : {row['accessible_pmr']}",
+                popup=f"{row['stop_name']}<br>Départ : {row['departure_time']}<br>PMR : {row['accessible_pmr']}",
                 icon=folium.Icon(color=color_marker, icon="bus", prefix="fa")
-            ).add_to(carte_itineraire)
-        folium_static(carte_itineraire)
+            ).add_to(carte)
 
+    folium_static(carte)
+
+def afficher_itineraire_detail(itineraire, depart, arrivee, voir_prochain, title=None):
+    if title:
+        st.subheader(title)
+
+    trip_id = itineraire["trip_id"].iloc[0]
+    route_color = f"#{itineraire['route_color'].iloc[0]}"
+    route_name = itineraire["route_short_name"].iloc[0]
+    direction = itineraire["trip_headsign"].iloc[0] if "trip_headsign" in itineraire.columns else "Non précisée"
+
+    ligne_html = f"""
+    <div style="font-size: 18px; margin-top: 10px;">
+        🎨 Ligne à prendre :
+        <span style="background-color:{route_color}; color:white; padding:4px 10px; border-radius:6px; margin-left:8px;">
+            {route_name}
+        </span><br>
+        🧭 Direction : <strong>{direction}</strong><br>
+        🚍 Départ : <strong>{depart}</strong>
+    </div>
+    """
+    st.markdown(ligne_html, unsafe_allow_html=True)
+    st.success(f"Itinéraire trouvé sur le trajet {trip_id} avec {len(itineraire)} arrêts.")
+    st.dataframe(itineraire[["trip_id", "stop_name", "departure_time", "arrival_delay", "accessible_pmr"]])
+
+    try:
+        t_start = datetime.strptime(itineraire["departure_time"].iloc[0], "%Y-%m-%d %H:%M:%S")
+        t_end = datetime.strptime(itineraire["departure_time"].iloc[-1], "%Y-%m-%d %H:%M:%S")
+        now = datetime.now()
+        minutes_to_depart = max((t_start - now).seconds // 60, 0)
+        total_minutes_remaining = max((t_end - now).seconds // 60, 0)
+
+        #st.info(f"⏱️ Temps total estimé jusqu'à l'arrivée : {total_minutes_remaining} minutes")
+        heures = total_minutes_remaining // 60
+        minutes = total_minutes_remaining % 60
+        if heures > 0:
+            temps_formate = f"{heures} heure(s) et {minutes} minute(s)"
+        else:
+            temps_formate = f"{minutes} minute(s)"
+        st.info(f"⏱️ Temps total estimé jusqu'à l'arrivée : {temps_formate}")
+
+        st.info(f"🕑 Heure estimée d'arrivée : {t_end.strftime('%H:%M:%S')}")
+
+        if voir_prochain:
+            retard = itineraire["arrival_delay"].iloc[0] or 0
+            passage_reel = t_start + pd.to_timedelta(retard, unit='s')
+            st.success(f"🕓 Prochain passage estimé : {passage_reel.strftime('%H:%M:%S')}")
+
+        if minutes_to_depart <= 5:
+            st.warning(f"🚨 Le bus part dans moins de {minutes_to_depart} minute(s) ! Dépêchez-vous.")
+        else:
+            #st.success(f"🕒 Vous avez environ {minutes_to_depart} minute(s) avant le départ.")
+            if minutes_to_depart >= 60:
+                h, m = divmod(minutes_to_depart, 60)
+                temps_attente = f"{h} heure(s) et {m} minute(s)"
+            else:
+                temps_attente = f"{minutes_to_depart} minute(s)"
+            st.success(f"🕒 Vous avez environ {temps_attente} avant le départ.")
+
+    except Exception:
+        st.warning("⏱️ Impossible de calculer la durée avec les horaires.")
+
+def afficher_itineraires(df_trip_updates, stops, routes):
     st.subheader("🧭 Itinéraire d'un arrêt à un autre")
-
     selected_route_id = st.selectbox("Filtrer par ligne (facultatif)", options=[""] + routes["route_id"].unique().tolist(), index=0)
     available_stops = sorted(df_trip_updates[df_trip_updates["stop_id"].isin(stops["stop_id"])]["stop_name"].dropna().unique().tolist())
     depart = st.selectbox("Départ", options=available_stops)
     arrivee = st.selectbox("Arrivée", options=available_stops)
+
+    if depart == arrivee:
+        st.markdown(f"### ✅ Vous êtes déjà à l'arrêt **{depart}**.")
+        st.info("Aucun déplacement nécessaire. Profitez du paysage !")
+        return
+
+    afficher_alternatives = st.checkbox("🚶‍♂️ Toujours afficher les alternatives à pied / à vélo")
+    
     planifier = st.checkbox("📅 Planifier un horaire de départ")
     heure_min, heure_max = None, None
     if planifier:
@@ -115,18 +133,16 @@ def afficher_itineraires(df_trip_updates, stops, routes):
                 t1_dt = datetime.strptime(t1_str, "%Y-%m-%d %H:%M:%S")
                 if t1_dt < datetime.now():
                     continue
-                if planifier:
-                    t1_time = t1_dt.time()
-                    if not (heure_min <= t1_time <= heure_max):
-                        continue
+                if planifier and not (heure_min <= t1_dt.time() <= heure_max):
+                    continue
             except:
                 continue
             segment = trip_df.loc[idx_depart:idx_arrivee]
             itineraire_directs.append({
                 "trip_id": trip_id,
-                "route_color": f"#{trip_df['route_color'].iloc[0]}",
+                "route_color": trip_df['route_color'].iloc[0],
                 "route_name": trip_df["route_short_name"].iloc[0],
-                "direction": trip_df["trip_headsign"].iloc[0] if "trip_headsign" in trip_df.columns else "Non précisée",
+                "direction": trip_df["trip_headsign"].iloc[0],
                 "segment": segment
             })
 
@@ -161,14 +177,9 @@ def afficher_itineraires(df_trip_updates, stops, routes):
 
                     try:
                         t_depart = datetime.strptime(trip_dep_stops.loc[idx_depart, "departure_time"], "%Y-%m-%d %H:%M:%S")
-                        t_corr = datetime.strptime(trip_dep_stops.loc[idx_corr, "departure_time"], "%Y-%m-%d %H:%M:%S")
-                        t_corr_arr = datetime.strptime(trip_arr_stops.loc[idx_corr_arr, "departure_time"], "%Y-%m-%d %H:%M:%S")
-                        t_arrivee = datetime.strptime(trip_arr_stops.loc[idx_arrivee, "departure_time"], "%Y-%m-%d %H:%M:%S")
                         if t_depart < datetime.now():
                             continue
                         if planifier and not (heure_min <= t_depart.time() <= heure_max):
-                            continue
-                        if (t_corr_arr - t_corr).total_seconds() < 120:
                             continue
                     except:
                         continue
@@ -176,17 +187,9 @@ def afficher_itineraires(df_trip_updates, stops, routes):
                     segment1 = trip_dep_stops.loc[idx_depart:idx_corr]
                     segment2 = trip_arr_stops.loc[idx_corr_arr:idx_arrivee]
                     itineraire_correspondances.append({
-                        "correspondance_stop": trip_dep_stops.loc[idx_corr, "stop_name"],
-                        "trip_dep_id": trip_dep,
-                        "route_dep_color": f"#{trip_dep_stops['route_color'].iloc[0]}",
-                        "route_dep_name": trip_dep_stops["route_short_name"].iloc[0],
-                        "direction_dep": trip_dep_stops["trip_headsign"].iloc[0],
                         "segment1": segment1,
-                        "trip_arr_id": trip_arr,
-                        "route_arr_color": f"#{trip_arr_stops['route_color'].iloc[0]}",
-                        "route_arr_name": trip_arr_stops["route_short_name"].iloc[0],
-                        "direction_arr": trip_arr_stops["trip_headsign"].iloc[0],
                         "segment2": segment2,
+                        "correspondance_stop": trip_dep_stops.loc[idx_corr, "stop_name"],
                         "total_stops": len(segment1) + len(segment2)
                     })
 
@@ -206,17 +209,73 @@ def afficher_itineraires(df_trip_updates, stops, routes):
             idx_selection = st.selectbox("Choisissez un trajet direct", trip_choices)
             it_sel = itineraire_directs[trip_choices.index(idx_selection)]
             afficher_itineraire_detail(it_sel["segment"], depart, arrivee, voir_prochain)
+            afficher_carte_globale([it_sel["segment"]], depart, arrivee)
 
         elif selection == "Itinéraire avec correspondance":
-            correspondance_choices = [
-                f"Changer à {it['correspondance_stop']} : Ligne {it['route_dep_name']} → Ligne {it['route_arr_name']} "
-                f"(Total arrêts : {it['total_stops']})"
-                for it in itineraire_correspondances
-            ]
-            idx_corr = st.selectbox("Choisissez un itinéraire avec correspondance", correspondance_choices)
-            it_corr = itineraire_correspondances[correspondance_choices.index(idx_corr)]
-            afficher_itineraire_detail(it_corr["segment1"], depart, it_corr['correspondance_stop'], voir_prochain, title="Segment 1 - Premier bus")
-            st.markdown(f"**Correspondance à l'arrêt : {it_corr['correspondance_stop']}**")
-            afficher_itineraire_detail(it_corr["segment2"], it_corr['correspondance_stop'], arrivee, voir_prochain, title="Segment 2 - Deuxième bus")
+            corr_choices = [f"Correspondance à {it['correspondance_stop']} ({it['total_stops']} arrêts)" for it in itineraire_correspondances]
+            idx_corr = st.selectbox("Choisissez un itinéraire avec correspondance", corr_choices)
+            it_corr = itineraire_correspondances[corr_choices.index(idx_corr)]
+            afficher_itineraire_detail(it_corr["segment1"], depart, it_corr['correspondance_stop'], voir_prochain, title="Segment 1")
+            afficher_itineraire_detail(it_corr["segment2"], it_corr['correspondance_stop'], arrivee, voir_prochain, title="Segment 2")
+            afficher_carte_globale([it_corr["segment1"], it_corr["segment2"]], depart, arrivee)
     else:
+        #st.error("Aucun trajet à venir ne correspond à vos critères horaires entre ces deux arrêts.")
         st.error("Aucun trajet à venir ne correspond à vos critères horaires entre ces deux arrêts.")
+        afficher_alternatives_pieton_velo(depart, arrivee, stops)
+        
+    # Si l'utilisateur souhaite toujours voir les alternatives marche/vélo
+    if afficher_alternatives:
+        afficher_alternatives_pieton_velo(depart, arrivee, stops)
+
+
+def afficher_alternatives_pieton_velo(depart, arrivee, stops):
+    st.subheader("🚴‍♂️ Itinéraires alternatifs (Marche / Vélo)")
+
+    stop_dep = stops[stops["stop_name"] == depart].head(1)
+    stop_arr = stops[stops["stop_name"] == arrivee].head(1)
+
+    if not stop_dep.empty and not stop_arr.empty:
+        lat1, lon1 = stop_dep.iloc[0]["stop_lat"], stop_dep.iloc[0]["stop_lon"]
+        lat2, lon2 = stop_arr.iloc[0]["stop_lat"], stop_arr.iloc[0]["stop_lon"]
+
+        def calcul_distance_km(lat1, lon1, lat2, lon2):
+            R = 6371
+            phi1, phi2 = math.radians(lat1), math.radians(lat2)
+            dphi = math.radians(lat2 - lat1)
+            dlambda = math.radians(lon2 - lon1)
+            a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+            return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        distance_km = calcul_distance_km(lat1, lon1, lat2, lon2)
+        temps_marche_min = int(distance_km / 5 * 60)
+        temps_velo_min = int(distance_km / 15 * 60)
+        
+        def format_minutes(total_min):
+            h, m = divmod(total_min, 60)
+            if h > 0:
+                return f"{h} heure(s) et {m} minute(s)"
+            else:
+                return f"{m} minute(s)"
+
+        temps_marche_str = format_minutes(temps_marche_min)
+        temps_velo_str = format_minutes(temps_velo_min)
+
+
+        st.info(f"📏 Distance à vol d'oiseau : **{distance_km:.2f} km**")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### 🚶 Marche")
+            st.success(f"Durée estimée : **{temps_marche_str}** à 5 km/h")
+        with col2:
+            st.markdown("### 🚲 Vélo")
+            st.success(f"Durée estimée : **{temps_velo_str}** à 15 km/h")
+
+
+        m = folium.Map(location=[(lat1 + lat2)/2, (lon1 + lon2)/2], zoom_start=14)
+        folium.Marker([lat1, lon1], popup=f"Départ : {depart}", icon=folium.Icon(color="green")).add_to(m)
+        folium.Marker([lat2, lon2], popup=f"Arrivée : {arrivee}", icon=folium.Icon(color="red")).add_to(m)
+        folium.PolyLine([[lat1, lon1], [lat2, lon2]], color="blue", weight=3, opacity=0.6, dash_array='5, 10').add_to(m)
+        folium_static(m)
+    else:
+        st.warning("❌ Coordonnées manquantes pour le calcul alternatif.")
