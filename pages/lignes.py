@@ -4,29 +4,51 @@ import folium
 from streamlit_folium import folium_static
 from google.transit import gtfs_realtime_pb2
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pickle
 import numpy as np
+from scipy.interpolate import interp1d
+import joblib
+import warnings
+from pandas.errors import PerformanceWarning
+warnings.simplefilter(action="ignore", category=PerformanceWarning)
 
-# === Chargement du modèle d'affluence et encodeurs ===
+# === Chargement des modèles d'affluence et retard ===
 @st.cache_resource
-def charger_modele_et_encodeurs():
+def charger_modeles():
     with open("modeles/affluence_model.pkl", "rb") as f_model:
-        modele = pickle.load(f_model)
+        modele_affluence = pickle.load(f_model)
     with open("modeles/route_encoder.pkl", "rb") as f_route:
         le_route = pickle.load(f_route)
     with open("modeles/stop_encoder.pkl", "rb") as f_stop:
         le_stop = pickle.load(f_stop)
-    return modele, le_route, le_stop
 
-modele_affluence, le_route, le_stop = charger_modele_et_encodeurs()
+    modele_retard = joblib.load("modeles/modele_retard.pkl")
+    colonnes_modele = pickle.load(open("modeles/colonnes_modele.pkl", "rb"))
 
-# === Utilitaires ===
-def convertir_timestamp(ts):
-    try:
-        return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-    except:
-        return "N/A"
+    return modele_affluence, le_route, le_stop, modele_retard, colonnes_modele
+
+modele_affluence, le_route, le_stop, modele_retard, colonnes_modele = charger_modeles()
+
+# === Météo (similaire à appV1) ===
+@st.cache_data(ttl=300)
+def get_meteo():
+    API_KEY = "8e5b0ceec624f5c9b6616e5e498367d4"
+    LAT, LON = 46.5802, 0.3404
+    url = f"https://api.openweathermap.org/data/2.5/weather?lat={LAT}&lon={LON}&units=metric&lang=fr&appid={API_KEY}"
+    response = requests.get(url)
+    data = response.json()
+    return {
+        "temperature": data["main"]["temp"],
+        "humidity": data["main"]["humidity"],
+        "wind_speed": data["wind"]["speed"],
+        "weather_main": data["weather"][0]["main"],
+        "weather_description": data["weather"][0]["description"],
+        "weather_icon": data["weather"][0]["icon"],
+        "visibility": data.get("visibility"),
+        "clouds": data.get("clouds", {}).get("all"),
+        "precipitation": data.get("rain", {}).get('1h', 0.0)
+    }
 
 def tag_affluence(val):
     if val == 2:
@@ -38,25 +60,76 @@ def tag_affluence(val):
 def predire_affluence(df, modele, le_route, le_stop):
     df = df.copy()
     df["departure_hour"] = pd.to_datetime(df["departure_time"], errors="coerce").dt.hour.fillna(0).astype(int)
-
-    try:
-        df["route_id_enc"] = le_route.transform(df["route_id"].astype(str))
-        df["stop_id_enc"] = le_stop.transform(df["stop_id"].astype(str))
-    except ValueError:
-        df["route_id_enc"] = df["route_id"].map(lambda x: le_route.transform([x])[0] if x in le_route.classes_ else -1)
-        df["stop_id_enc"] = df["stop_id"].map(lambda x: le_stop.transform([x])[0] if x in le_stop.classes_ else -1)
-
+    df["route_id_enc"] = df["route_id"].map(lambda x: le_route.transform([x])[0] if x in le_route.classes_ else -1)
+    df["stop_id_enc"] = df["stop_id"].map(lambda x: le_stop.transform([x])[0] if x in le_stop.classes_ else -1)
     df = df[(df["route_id_enc"] >= 0) & (df["stop_id_enc"] >= 0)]
     if df.empty:
         df["affluence"] = []
         return df
-
     X = df[["route_id_enc", "stop_id_enc", "departure_hour"]]
     df["affluence"] = modele.predict(X)
     df["niveau_affluence"] = df["affluence"].apply(tag_affluence)
     return df
 
-# === Affichage principal ===
+def predire_retard(df, modele_retard, colonnes_modele, meteo):
+    if not hasattr(modele_retard, "predict"):
+        st.error("❌ Le modèle de prédiction du retard chargé n'est pas valide (objet de type numpy.ndarray ou autre sans .predict()). Vérifie le fichier 'modele_retard.pkl'.")
+        df["Retard estimé"] = "N/A"
+        df["Heure estimée"] = "N/A"
+        return df
+
+    now = datetime.now()
+    jour = now.strftime('%A')
+
+    def prediction(row):
+        try:
+            heure = pd.to_datetime(row["departure_time"], errors="coerce").hour
+        except:
+            heure = 0
+
+        donnee = pd.DataFrame([{
+            "trip_headsign": row["trip_headsign"],
+            "stop_name": row["stop_name"],
+            "route_short_name": row["route_short_name"],
+            "jour_semaine": jour,
+            "heure": heure,
+            "stop_lat": row["stop_lat"],
+            "stop_lon": row["stop_lon"],
+            **meteo,
+            "datetime": now
+        }])
+
+        X = pd.get_dummies(donnee)
+        for col in colonnes_modele:
+            if col not in X:
+                X[col] = 0
+        X = X[colonnes_modele]
+
+        try:
+            retard_sec = modele_retard.predict(X)[0]
+        except Exception as e:
+            st.error(f"Erreur lors de la prédiction : {e}")
+            return pd.Series([None, None, None])
+
+        retard_min = int(retard_sec // 60)
+        retard_s = int(retard_sec % 60)
+
+        try:
+            heure_estimee = (
+                datetime.combine(now.date(), pd.to_datetime(row["departure_time"]).time()) + 
+                timedelta(seconds=retard_sec)
+            ).time()
+        except:
+            heure_estimee = None
+
+        return pd.Series([retard_min, retard_s, heure_estimee])
+
+    df[["retard_min", "retard_sec", "heure_estimee"]] = df.apply(prediction, axis=1)
+    df["Retard estimé"] = df["retard_min"].astype(str) + " min " + df["retard_sec"].astype(str) + " sec"
+    df["Heure estimée"] = df["heure_estimee"].astype(str).str.slice(0, 5).str.replace(":", "h")
+    return df
+
+
 def afficher_lignes(df_trip_updates, url_gtfs_rt):
     st.subheader("🚌 Lignes disponibles")
     afficher_alertes(url_gtfs_rt)
@@ -113,49 +186,32 @@ def afficher_lignes(df_trip_updates, url_gtfs_rt):
             st.warning("Aucun trajet trouvé pour cette ligne.")
             return
 
-        #trip_ref = trip_counts.idxmax()
-        #arrets = trips_ligne[trips_ligne["trip_id"] == trip_ref].dropna(subset=["stop_lat", "stop_lon"]).sort_values("departure_time")
-
         arrets = trips_ligne.dropna(subset=["stop_lat", "stop_lon"]).sort_values("departure_time")
         arrets = predire_affluence(arrets, modele_affluence, le_route, le_stop)
+        meteo = get_meteo()
+        arrets = predire_retard(arrets, modele_retard, colonnes_modele, meteo)
 
-        # Agrégation par arrêt : affluence moyenne ou la plus fréquente
-        agg_affluence = (
-            arrets.groupby(["stop_id", "stop_name", "stop_lat", "stop_lon", "accessible_pmr"])["affluence"]
-            .agg(lambda x: round(x.mean()))
-            .reset_index()
-        )
-
-        agg_affluence["niveau_affluence"] = agg_affluence["affluence"].apply(tag_affluence)
-
-
-        if arrets.empty:
-            st.warning("Pas de coordonnées disponibles pour tracer la ligne.")
-            return
-
-        # === Prédiction d’affluence ===
-        arrets = predire_affluence(arrets, modele_affluence, le_route, le_stop)
-
-        st.markdown("### 🧾 Liste des arrêts avec affluence prévue")
+        st.markdown("### 🧾 Liste des arrêts avec affluence et retard prévus")
         st.dataframe(
             arrets.dropna(subset=["departure_time"])[
-                ["stop_name", "departure_time", "accessible_pmr", "niveau_affluence"]
-            ].drop_duplicates()
+                ["stop_name", "departure_time", "accessible_pmr", "niveau_affluence", "Retard estimé", "Heure estimée"]
+            ].drop_duplicates(),
+            use_container_width=True
         )
 
         with st.expander("🗺️ Carte de la ligne", expanded=True):
             m = folium.Map(location=[arrets["stop_lat"].mean(), arrets["stop_lon"].mean()], zoom_start=13)
-            folium.PolyLine(
-                locations=list(zip(arrets["stop_lat"], arrets["stop_lon"])),
-                color=couleur,
-                weight=5,
-                opacity=0.8
-            ).add_to(m)
+
+            for trip_id in arrets["trip_id"].unique():
+                segment = arrets[arrets["trip_id"] == trip_id].sort_values("departure_time")
+                latlons = list(zip(segment["stop_lat"], segment["stop_lon"]))
+                for i in range(len(latlons) - 1):
+                    folium.PolyLine(latlons[i:i+2], color=couleur, weight=4).add_to(m)
 
             for _, row in arrets.iterrows():
                 folium.Marker(
                     location=[row["stop_lat"], row["stop_lon"]],
-                    popup=f"{row['stop_name']}<br>Affluence : {row['niveau_affluence']}<br>PMR : {row['accessible_pmr']}",
+                    popup=f"{row['stop_name']}<br>Affluence : {row['niveau_affluence']}<br>PMR : {row['accessible_pmr']}<br>Retard : {row['Retard estimé']}",
                     icon=folium.Icon(color="blue", icon="bus", prefix="fa")
                 ).add_to(m)
 
@@ -172,6 +228,12 @@ def _afficher_bandeau_ligne(ligne):
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
+
+def convertir_timestamp(ts):
+    try:
+        return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+    except:
+        return "N/A"
 
 def afficher_alertes(url):
     try:
