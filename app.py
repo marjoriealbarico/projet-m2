@@ -21,8 +21,8 @@ from pages.clustering import afficher_clustering
 URL_GTFS_RT = "https://data.grandpoitiers.fr/data-fair/api/v1/datasets/2gwvlq16siyb7d9m3rqt1pb1/metadata-attachments/poitiers.pbf"
 
 # Connexion à la base de données PostgreSQL
-user = "marjoriealbarico"
-password = "postgres"
+user = ""
+password = ""
 host = "localhost"
 port = "5432"
 database = "poitiers"
