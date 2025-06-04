@@ -4,6 +4,9 @@ import folium
 from streamlit_folium import folium_static
 from datetime import datetime
 import math
+import openrouteservice
+from openrouteservice import convert
+from datetime import datetime
 
 def afficher_carte_globale(segments, depart, arrivee):
     st.subheader("🗺️ Carte globale de l'itinéraire")
@@ -51,8 +54,8 @@ def afficher_itineraire_detail(itineraire, depart, arrivee, voir_prochain, title
     </div>
     """
     st.markdown(ligne_html, unsafe_allow_html=True)
-    st.success(f"Itinéraire trouvé sur le trajet {trip_id} avec {len(itineraire)} arrêts.")
-    st.dataframe(itineraire[["trip_id", "stop_name", "departure_time", "arrival_delay", "accessible_pmr"]])
+    st.success(f"Itinéraire trouvé sur le trajet avec {len(itineraire)} arrêts.")
+    st.dataframe(itineraire[["stop_name", "departure_time", "arrival_delay", "accessible_pmr"]])
 
     try:
         t_start = datetime.strptime(itineraire["departure_time"].iloc[0], "%Y-%m-%d %H:%M:%S")
@@ -68,7 +71,8 @@ def afficher_itineraire_detail(itineraire, depart, arrivee, voir_prochain, title
             temps_formate = f"{heures} heure(s) et {minutes} minute(s)"
         else:
             temps_formate = f"{minutes} minute(s)"
-        st.info(f"⏱️ Temps total estimé jusqu'à l'arrivée : {temps_formate}")
+        #st.info(f"⏱️ Temps total estimé jusqu'à l'arrivée : {temps_formate}")
+        
 
         st.info(f"🕑 Heure estimée d'arrivée : {t_end.strftime('%H:%M:%S')}")
 
@@ -212,14 +216,32 @@ def afficher_itineraires(df_trip_updates, stops, routes):
             afficher_carte_globale([it_sel["segment"]], depart, arrivee)
 
         elif selection == "Itinéraire avec correspondance":
-            corr_choices = [f"Correspondance à {it['correspondance_stop']} ({it['total_stops']} arrêts)" for it in itineraire_correspondances]
+            #corr_choices = [f"Correspondance à {it['correspondance_stop']} ({it['total_stops']} arrêts)" for it in itineraire_correspondances]
+            corr_choices = []
+            for it in itineraire_correspondances:
+                try:
+                    t1_str = it["segment1"]["departure_time"].iloc[0]
+                    t1 = datetime.strptime(t1_str, "%Y-%m-%d %H:%M:%S")
+                    t2 = datetime.strptime(it["segment2"]["departure_time"].iloc[-1], "%Y-%m-%d %H:%M:%S")
+                    delta = t2 - t1
+                    total_min = int(delta.total_seconds() // 60)
+                    h, m = divmod(total_min, 60)
+                    temps_str = f"{h}h{m:02}" if h else f"{m} min"
+                    heure_depart = t1.strftime("%H:%M")
+                except Exception:
+                    temps_str = "durée inconnue"
+                    heure_depart = "inconnue"
+                
+                corr_choices.append(
+                    f"Correspondance à {it['correspondance_stop']} ({it['total_stops']} arrêts, durée ~ {temps_str}, départ à {heure_depart})"
+                )
+
             idx_corr = st.selectbox("Choisissez un itinéraire avec correspondance", corr_choices)
             it_corr = itineraire_correspondances[corr_choices.index(idx_corr)]
             afficher_itineraire_detail(it_corr["segment1"], depart, it_corr['correspondance_stop'], voir_prochain, title="Segment 1")
             afficher_itineraire_detail(it_corr["segment2"], it_corr['correspondance_stop'], arrivee, voir_prochain, title="Segment 2")
             afficher_carte_globale([it_corr["segment1"], it_corr["segment2"]], depart, arrivee)
     else:
-        #st.error("Aucun trajet à venir ne correspond à vos critères horaires entre ces deux arrêts.")
         st.error("Aucun trajet à venir ne correspond à vos critères horaires entre ces deux arrêts.")
         afficher_alternatives_pieton_velo(depart, arrivee, stops)
         
@@ -229,53 +251,65 @@ def afficher_itineraires(df_trip_updates, stops, routes):
 
 
 def afficher_alternatives_pieton_velo(depart, arrivee, stops):
-    st.subheader("🚴‍♂️ Itinéraires alternatifs (Marche / Vélo)")
+    st.subheader("🚶‍♀️ Itinéraire alternatif (Marche ou Vélo)")
 
     stop_dep = stops[stops["stop_name"] == depart].head(1)
     stop_arr = stops[stops["stop_name"] == arrivee].head(1)
 
-    if not stop_dep.empty and not stop_arr.empty:
-        lat1, lon1 = stop_dep.iloc[0]["stop_lat"], stop_dep.iloc[0]["stop_lon"]
-        lat2, lon2 = stop_arr.iloc[0]["stop_lat"], stop_arr.iloc[0]["stop_lon"]
-
-        def calcul_distance_km(lat1, lon1, lat2, lon2):
-            R = 6371
-            phi1, phi2 = math.radians(lat1), math.radians(lat2)
-            dphi = math.radians(lat2 - lat1)
-            dlambda = math.radians(lon2 - lon1)
-            a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-            return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-        distance_km = calcul_distance_km(lat1, lon1, lat2, lon2)
-        temps_marche_min = int(distance_km / 5 * 60)
-        temps_velo_min = int(distance_km / 15 * 60)
-        
-        def format_minutes(total_min):
-            h, m = divmod(total_min, 60)
-            if h > 0:
-                return f"{h} heure(s) et {m} minute(s)"
-            else:
-                return f"{m} minute(s)"
-
-        temps_marche_str = format_minutes(temps_marche_min)
-        temps_velo_str = format_minutes(temps_velo_min)
-
-
-        st.info(f"📏 Distance à vol d'oiseau : **{distance_km:.2f} km**")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### 🚶 Marche")
-            st.success(f"Durée estimée : **{temps_marche_str}** à 5 km/h")
-        with col2:
-            st.markdown("### 🚲 Vélo")
-            st.success(f"Durée estimée : **{temps_velo_str}** à 15 km/h")
-
-
-        m = folium.Map(location=[(lat1 + lat2)/2, (lon1 + lon2)/2], zoom_start=14)
-        folium.Marker([lat1, lon1], popup=f"Départ : {depart}", icon=folium.Icon(color="green")).add_to(m)
-        folium.Marker([lat2, lon2], popup=f"Arrivée : {arrivee}", icon=folium.Icon(color="red")).add_to(m)
-        folium.PolyLine([[lat1, lon1], [lat2, lon2]], color="blue", weight=3, opacity=0.6, dash_array='5, 10').add_to(m)
-        folium_static(m)
-    else:
+    if stop_dep.empty or stop_arr.empty:
         st.warning("❌ Coordonnées manquantes pour le calcul alternatif.")
+        return
+
+    lat1, lon1 = stop_dep.iloc[0]["stop_lat"], stop_dep.iloc[0]["stop_lon"]
+    lat2, lon2 = stop_arr.iloc[0]["stop_lat"], stop_arr.iloc[0]["stop_lon"]
+
+    def calcul_distance_km(lat1, lon1, lat2, lon2):
+        R = 6371
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    distance_km = calcul_distance_km(lat1, lon1, lat2, lon2)
+
+    mode = st.radio("Choisissez le mode de déplacement :", ["🚶 Marche", "🚲 Vélo"])
+
+    if mode == "🚶 Marche":
+        profile = "foot-walking"
+        vitesse_kmh = 5
+        couleur = "blue"
+    else:
+        profile = "cycling-regular"
+        vitesse_kmh = 15
+        couleur = "orange"
+
+    temps_min = int(distance_km / vitesse_kmh * 60)
+    heures, minutes = divmod(temps_min, 60)
+    temps_str = f"{heures} heure(s) et {minutes} minute(s)" if heures > 0 else f"{minutes} minute(s)"
+    #Hypothèse suivante :
+    #Une voiture thermique émet environ 200 g CO₂/km
+    #Marche et vélo : 0 g/km
+    co2_voiture = distance_km * 200  # en grammes
+    
+    st.info(f"📏 Distance : **{distance_km:.2f} km**")
+    st.success(f"⏱️ Durée estimée : **{temps_str}** à {vitesse_kmh} km/h")
+    st.markdown(f"🌱 En choisissant ce mode, vous évitez environ **{int(co2_voiture)} g de CO₂** par rapport à un trajet en voiture thermique.")
+
+
+    m = folium.Map(location=[(lat1 + lat2)/2, (lon1 + lon2)/2], zoom_start=14)
+    folium.Marker([lat1, lon1], popup=f"Départ : {depart}", icon=folium.Icon(color="green")).add_to(m)
+    folium.Marker([lat2, lon2], popup=f"Arrivée : {arrivee}", icon=folium.Icon(color="red")).add_to(m)
+
+    try:
+        client = openrouteservice.Client(key="5b3ce3597851110001cf62483d2ab067b4554270ba21afc84b44a8b9")  # API Key d'OpenRouteService
+        coords = [(lon1, lat1), (lon2, lat2)]
+        route = client.directions(coords, profile=profile, format='geojson')
+        folium.GeoJson(route, name=f"Itinéraire {mode}", style_function=lambda x: {
+            "color": couleur, "weight": 4, "opacity": 0.7
+        }).add_to(m)
+        folium.LayerControl().add_to(m)
+    except Exception as e:
+        st.warning(f"❌ Itinéraire {mode} indisponible : {e}")
+
+    folium_static(m)
