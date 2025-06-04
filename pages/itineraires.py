@@ -302,7 +302,7 @@ def afficher_alternatives_pieton_velo(depart, arrivee, stops):
     folium.Marker([lat2, lon2], popup=f"Arrivée : {arrivee}", icon=folium.Icon(color="red")).add_to(m)
 
     try:
-        client = openrouteservice.Client(key="5b3ce3597851110001cf62483d2ab067b4554270ba21afc84b44a8b9")  # API Key d'OpenRouteService
+        client = openrouteservice.Client(key="")  # API Key d'OpenRouteService
         coords = [(lon1, lat1), (lon2, lat2)]
         route = client.directions(coords, profile=profile, format='geojson')
         folium.GeoJson(route, name=f"Itinéraire {mode}", style_function=lambda x: {
