@@ -14,13 +14,19 @@ def afficher_carte_des_arrets(df_trip_updates):
         lat = group["stop_lat"].iloc[0]
         lon = group["stop_lon"].iloc[0]
         acces = group["accessible_pmr"].iloc[0]
-        lignes = group[["route_short_name", "route_color"]].dropna().drop_duplicates()
+        #lignes = group[["route_short_name", "route_color"]].dropna().drop_duplicates()
+        lignes = group[["route_short_name", "route_color", "trip_headsign", "trip_id"]].dropna().drop_duplicates(subset=["trip_id"])
 
-        html = f"<b>{stop_name}</b><br>Accessibilité PMR : <b>{acces}</b><br>Bus :<ul>"
+
+        html = f"<b>{stop_name}</b><br>Accessibilité PMR : <b>{acces}</b><br><b>Itinéraires :</b><ul>"
         for _, ligne in lignes.iterrows():
             couleur = f"#{ligne['route_color']}"
-            html += f"<li><span style='background-color:{couleur};color:white;padding:2px 8px;border-radius:4px;'>{ligne['route_short_name']}</span></li>"
+            trip_stops = df_trip_updates[df_trip_updates["trip_id"] == ligne["trip_id"]].sort_values("departure_time")
+            if not trip_stops.empty:
+                origine = trip_stops.iloc[0]["stop_name"]
+                html += f"<li><span style='background-color:{couleur};color:white;padding:2px 8px;border-radius:4px;'>Ligne {ligne['route_short_name']}</span> {origine} → {ligne['trip_headsign']}</li>"
         html += "</ul>"
+
 
         folium.Marker(
             location=[lat, lon],
